@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: feedback-board
+  labels:
+    app: feedback-board
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: feedback-board
+  template:
+    metadata:
+      labels:
+        app: feedback-board
+    spec:
+      containers:
+        - name: feedback-board
+          image: herit1974/feedback-board:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3000
+          env:
+            - name: PORT
+              value: "3000"

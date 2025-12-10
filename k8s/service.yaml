@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: feedback-board-service
+spec:
+  type: LoadBalancer
+  selector:
+    app: feedback-board
+  ports:
+    - name: http
+      port: 80
+      targetPort: 3000

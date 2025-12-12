@@ -3,10 +3,10 @@ kind: Service
 metadata:
   name: feedback-board-service
 spec:
-  type: LoadBalancer
   selector:
     app: feedback-board
+  type: ClusterIP
   ports:
     - name: http
-      port: 80
+      port: 3000
       targetPort: 3000

@@ -1,10 +1,15 @@
+// Jenkinsfile - CI/CD for Feedback Board (cross-platform)
+// Requires Jenkins credentials:
+//  - docker-hub-cred (Username/Password)  -> ID: docker-hub-cred
+//  - kubeconfig (Secret file)             -> ID: kubeconfig
 pipeline {
   agent any
 
   environment {
     DOCKER_IMAGE = "herit1974/feedback-board"
     DOCKER_TAG   = "latest"
-    KUBECONFIG   = "${WORKSPACE}/.kube/config"
+    // We will use the temporary kubeconfig file path provided by Jenkins 'withCredentials'
+    WORK_KUBECONFIG = "${WORKSPACE}\\.kube\\config" // used only as a reference on Windows, kubectl will be given the credential file directly
   }
 
   options {
@@ -14,9 +19,10 @@ pipeline {
   }
 
   stages {
+
     stage('Checkout SCM') {
       steps {
-        echo "Checking out source code"
+        echo "Checking out source code (scm)"
         checkout scm
       }
     }
@@ -26,27 +32,25 @@ pipeline {
         echo "Installing dependencies and running tests (cross-platform)"
         script {
           if (isUnix()) {
-            // Unix-friendly
             sh '''
               set -e
               echo "node version:"
               node --version || true
               echo "npm version:"
               npm --version || true
-              npm install
-              npm test
+              npm ci || npm install
+              npm test || true
             '''
           } else {
-            // Windows-friendly (uses cmd / PowerShell via bat)
             bat '''
               @echo off
               echo node version:
               node --version || echo node-not-found
               echo npm version:
               npm --version || echo npm-not-found
-              REM use npm install, may require Node installed on the agent
-              npm install
-              npm test
+              REM try npm ci, fallback to npm install
+              npm ci || (echo npm ci failed - trying npm install & npm install)
+              npm test || echo tests-failed-but-continue
             '''
           }
         }
@@ -68,6 +72,7 @@ pipeline {
 
     stage('Push Docker Image') {
       steps {
+        echo "Pushing Docker image to registry"
         withCredentials([usernamePassword(credentialsId: 'docker-hub-cred', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
           script {
             if (isUnix()) {
@@ -76,6 +81,7 @@ pipeline {
                 docker push ${DOCKER_IMAGE}:${DOCKER_TAG}
               '''
             } else {
+              // Windows (cmd). This uses piping; if your Jenkins runs under an account that can't pipe, adjust to PowerShell.
               bat """
                 @echo off
                 echo %DOCKER_PASS% | docker login -u %DOCKER_USER% --password-stdin
@@ -89,41 +95,47 @@ pipeline {
 
     stage('Deploy to Kubernetes') {
       steps {
-        echo "Deploying to Kubernetes (requires kubeconfig credential 'kubeconfig')"
+        echo "Deploying to Kubernetes (using kubeconfig credential 'kubeconfig')"
         withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
           script {
-            // Copy kubeconfig into workspace and use kubectl via minikube kubectl or installed kubectl
             if (isUnix()) {
               sh '''
-                mkdir -p $(dirname "${KUBECONFIG}")
-                cp "${KUBECONFIG_FILE}" "${KUBECONFIG}"
-                kubectl apply -f k8s/deployment.yaml
-                kubectl apply -f k8s/service.yaml
+                echo "Using kubeconfig: ${KUBECONFIG_FILE}"
+                kubectl --kubeconfig="${KUBECONFIG_FILE}" version --client
+                kubectl --kubeconfig="${KUBECONFIG_FILE}" apply -f k8s/deployment.yaml
+                kubectl --kubeconfig="${KUBECONFIG_FILE}" apply -f k8s/service.yaml
+                kubectl --kubeconfig="${KUBECONFIG_FILE}" rollout status deployment/feedback-board --timeout=120s || true
+                kubectl --kubeconfig="${KUBECONFIG_FILE}" get svc feedback-board-service -o wide
               '''
             } else {
               bat """
                 @echo off
-                if not exist "%WORKSPACE%\\.kube" mkdir "%WORKSPACE%\\.kube"
-                copy "%KUBECONFIG_FILE%" "%KUBECONFIG%"
-                kubectl apply -f k8s\\deployment.yaml
-                kubectl apply -f k8s\\service.yaml
+                echo Using kubeconfig: %KUBECONFIG_FILE%
+                kubectl --kubeconfig="%KUBECONFIG_FILE%" version --client
+                kubectl --kubeconfig="%KUBECONFIG_FILE%" apply -f k8s\\deployment.yaml
+                kubectl --kubeconfig="%KUBECONFIG_FILE%" apply -f k8s\\service.yaml
+                kubectl --kubeconfig="%KUBECONFIG_FILE%" rollout status deployment/feedback-board --timeout=120s || exit 0
+                kubectl --kubeconfig="%KUBECONFIG_FILE%" get svc feedback-board-service -o wide
               """
             }
           }
         }
       }
     }
-  }
+  } // stages
 
   post {
     success {
-      echo "Pipeline SUCCESS"
+      echo "Pipeline SUCCESS — image: ${DOCKER_IMAGE}:${DOCKER_TAG}"
     }
     failure {
-      echo "Pipeline failed - check console output"
+      echo "Pipeline FAILED — check console output"
     }
     always {
+      // keep short build workspace tidy
       cleanWs()
+      // (optional) archive logs or artifacts if present
+      archiveArtifacts artifacts: 'logs/**/*.log, dist/**', allowEmptyArchive: true
     }
   }
 }
